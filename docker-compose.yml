@@ -6,6 +6,7 @@ services:
     volumes:
       - cb-index-data:/app/data
       - ./index.html:/app/index.html:ro
+      - ./release_notes.md:/app/release_notes.md:ro
     restart: unless-stopped
 
 volumes:
