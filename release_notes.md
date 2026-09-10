@@ -1,5 +1,23 @@
 # Release Notes
 
+## v2.7.0 (2026-09-10)
+
+### New Features
+
+- **Memory Residency by Node (Analysis tab)** — New dashboard card under Summary showing, per index node, how many indexes are fully in RAM (`resident_percent = 100`), the % of indexes that are fully resident, average Res%, and memory used. Cluster totals include fully-in-RAM count and **avg fully-resident indexes per node**. Indexes with no Res% metric are treated as unknown, not 100%. Unique Only is ignored for this card so each node’s local copies are counted. [#45](https://github.com/Fujio-Turner/cb_index_analyzer/issues/45)
+
+- **Partitioned GSI indexes** — The tool now detects hash-partitioned indexes instead of treating node slices as replicas. `system:indexes` keeps `PARTITION BY` / `num_partition` and reconstructed `CREATE INDEX` statements include them. Stats keys with a partition id (`bucket:scope:collection:name:3`) parse as the real index name. A teal **Part** badge marks partitioned indexes. Unique Only still hides `(replica N)` copies but keeps each node’s partition slice. The Index Placement Optimizer leaves partitioned indexes in place (Couchbase `ALTER INDEX ... nodes` cannot change how many nodes they occupy) and shows an info banner. [#69](https://github.com/Fujio-Turner/cb_index_analyzer/issues/69)
+
+- **Version badge shows this release** — Click **v2.7.0** in the navbar for the date, highlight bullets, and a link to these notes.
+
+### Stats
+
+- **Files changed:** `index.html`, `lib/pure.js`, `package.json`, `README.md`, `release_notes.md`, `server.js`, `guides/RELEASE.md`, `tests/pure.test.js`, `tests/rebalance.test.js`, `tests/estimator.test.js`, `tests/version.test.js`
+- Updated version badge to v2.7.0.
+- Release process documented in [`guides/RELEASE.md`](guides/RELEASE.md).
+
+---
+
 ## v2.6.2 (2026-04-23)
 
 ### Changes

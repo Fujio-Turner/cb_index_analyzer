@@ -2,6 +2,9 @@ const {
   fmt, truncPart, fmtCompact, fmtNs, wildcardMatch, safeName,
   isArrayIndex, hasDocTypeFirst, getWhereFields, getIndexFields,
   findWhereFieldsInIndex, findDuplicateKeys, buildCreateIndex,
+  stripReplicaSuffix, replicaIdFromName, parseStatsKey,
+  markPartitionedIndexes, isFullyResident, hasResidentMetric,
+  computeNodeMemoryResidency,
   dedup, matchNodeFilter, matchFilter, SCAN_DAY_RANGES,
   parseSystemJSON, parseStatsNodeJSON, buildTree,
 } = require('../lib/pure');
@@ -165,6 +168,16 @@ describe('buildCreateIndex', () => {
     const stmt = buildCreateIndex({ bucket: 'app', scope: 'inventory', collection: 'items', name: 'idx1', isPrimary: false, keys: ['`sku`'], condition: '', replica: 0 });
     expect(stmt).toBe('CREATE INDEX `idx1` ON `app`.`inventory`.`items`(`sku`)');
   });
+  test('partitioned index includes PARTITION BY and num_partition', () => {
+    const stmt = buildCreateIndex({
+      bucket: 'travel', scope: 'inventory', collection: 'airline', name: 'idx_p',
+      isPrimary: false, keys: ['`country`'], condition: '', replica: 1,
+      partition: 'HASH(`#META`.`id`)', numPartition: 8
+    });
+    expect(stmt).toContain('PARTITION BY HASH(`#META`.`id`)');
+    expect(stmt).toContain('"num_replica":1');
+    expect(stmt).toContain('"num_partition":8');
+  });
 });
 
 // ────────────────────────────────────────────
@@ -180,6 +193,21 @@ describe('dedup', () => {
     expect(dedup(items)).toHaveLength(2);
   });
   test('empty array', () => expect(dedup([])).toEqual([]));
+  test('drops replica copies, keeps master name', () => {
+    const items = [
+      { bucket: 'b', scope: 's', collection: 'c', name: 'idx1', _nodeName: 'n1' },
+      { bucket: 'b', scope: 's', collection: 'c', name: 'idx1 (replica 1)', _nodeName: 'n2' },
+    ];
+    expect(dedup(items)).toHaveLength(1);
+    expect(dedup(items)[0].name).toBe('idx1');
+  });
+  test('keeps same name on different nodes (partition slices)', () => {
+    const items = [
+      { bucket: 'b', scope: 's', collection: 'c', name: 'idx_p', _nodeName: 'n1' },
+      { bucket: 'b', scope: 's', collection: 'c', name: 'idx_p', _nodeName: 'n2' },
+    ];
+    expect(dedup(items)).toHaveLength(2);
+  });
 });
 
 // ────────────────────────────────────────────
@@ -351,6 +379,29 @@ describe('parseSystemJSON', () => {
     expect(flat[0].name).toBe('fts1 [FTS]');
   });
 
+  test('captures PARTITION BY from system:indexes', () => {
+    const input = JSON.stringify([{
+      indexes: {
+        name: 'idx_p', keyspace_id: 'airline', scope_id: 'inventory', bucket_id: 'travel',
+        using: 'gsi', state: 'online', index_key: ['`country`'],
+        partition: 'HASH(`#META`.`id`)', metadata: { num_replica: 1, num_partition: 8 }
+      }
+    }]);
+    const flat = parseSystemJSON(input);
+    expect(flat[0].isPartitioned).toBe(true);
+    expect(flat[0].partition).toBe('HASH(`#META`.`id`)');
+    expect(flat[0].numPartition).toBe(8);
+    expect(buildCreateIndex(flat[0])).toMatch(/PARTITION BY HASH/);
+    expect(buildCreateIndex(flat[0])).toMatch(/num_partition/);
+  });
+
+  test('non-partitioned index is not flagged', () => {
+    const input = JSON.stringify([{ indexes: { name: 'idx1', keyspace_id: 'b', using: 'gsi', state: 'online', index_key: ['`city`'] } }]);
+    const flat = parseSystemJSON(input);
+    expect(flat[0].isPartitioned).toBe(false);
+    expect(flat[0].partition).toBe('');
+  });
+
   test('throws on invalid JSON', () => {
     expect(() => parseSystemJSON('not json')).toThrow('Invalid JSON');
   });
@@ -407,6 +458,110 @@ describe('parseStatsNodeJSON', () => {
     const input = JSON.stringify({ 'b:idx': { disk_size: 300, data_size: 0 } });
     const { flat } = parseStatsNodeJSON(input, 'disk_size');
     expect(flat[0].bloat_ratio).toBe(0);
+  });
+
+  test('parses 5-part partition stats key', () => {
+    const { flat } = parseStatsNodeJSON(JSON.stringify({
+      'app:inv:items:idx_sku:3': { disk_size: 500, items_count: 10 }
+    }), 'disk_size');
+    expect(flat[0].name).toBe('idx_sku');
+    expect(flat[0].partitionId).toBe(3);
+    expect(flat[0].isPartitioned).toBe(true);
+    expect(flat[0].collection).toBe('items');
+    expect(flat[0].scope).toBe('inv');
+  });
+
+  test('partition id 0 is not treated as partitioned', () => {
+    const { flat } = parseStatsNodeJSON(JSON.stringify({
+      'app:inv:items:idx_sku:0': { disk_size: 500 }
+    }), 'disk_size');
+    expect(flat[0].name).toBe('idx_sku');
+    expect(flat[0].partitionId).toBe(0);
+    expect(flat[0].isPartitioned).toBe(false);
+  });
+});
+
+describe('parseStatsKey', () => {
+  test('2-part', () => {
+    expect(parseStatsKey('travel:idx_city')).toEqual({
+      bucket: 'travel', scope: '_default', collection: '_default', name: 'idx_city', partitionId: null
+    });
+  });
+  test('4-part', () => {
+    const k = parseStatsKey('app:inv:items:idx_sku');
+    expect(k.name).toBe('idx_sku');
+    expect(k.partitionId).toBeNull();
+  });
+});
+
+describe('stripReplicaSuffix / replicaIdFromName', () => {
+  test('strips replica suffix', () => {
+    expect(stripReplicaSuffix('idx1 (replica 1)')).toBe('idx1');
+    expect(replicaIdFromName('idx1 (replica 1)')).toBe(1);
+    expect(replicaIdFromName('idx1')).toBe(0);
+  });
+});
+
+describe('markPartitionedIndexes', () => {
+  test('same master name on two nodes is partitioned', () => {
+    const idxs = [
+      { bucket: 'b', scope: 's', collection: 'c', name: 'idx_p', currentNode: 'n1' },
+      { bucket: 'b', scope: 's', collection: 'c', name: 'idx_p', currentNode: 'n2' },
+    ];
+    markPartitionedIndexes(idxs);
+    expect(idxs.every(i => i.isPartitioned)).toBe(true);
+  });
+  test('master + replica on two nodes is NOT partitioned', () => {
+    const idxs = [
+      { bucket: 'b', scope: 's', collection: 'c', name: 'idx1', currentNode: 'n1' },
+      { bucket: 'b', scope: 's', collection: 'c', name: 'idx1 (replica 1)', currentNode: 'n2' },
+    ];
+    markPartitionedIndexes(idxs);
+    expect(idxs.some(i => i.isPartitioned)).toBe(false);
+  });
+});
+
+describe('computeNodeMemoryResidency', () => {
+  const idx = (res, mem = 1) => ({ resident_percent: res, memory_used: mem });
+
+  test('per-node fully-resident percent and cluster averages', () => {
+    const nodes = [
+      { nodeName: 'n1', flat: [idx(100), idx(100), idx(40)] },
+      { nodeName: 'n2', flat: [idx(100), idx(80)] }
+    ];
+    const r = computeNodeMemoryResidency(nodes);
+    expect(r.perNode[0].fullyResidentCount).toBe(2);
+    expect(r.perNode[0].fullyResidentPct).toBeCloseTo(66.666, 2);
+    expect(r.perNode[1].fullyResidentCount).toBe(1);
+    expect(r.perNode[1].fullyResidentPct).toBe(50);
+    expect(r.clusterFullyResidentCount).toBe(3);
+    expect(r.clusterKnownCount).toBe(5);
+    expect(r.avgFullyResidentIndexesPerNode).toBe(1.5);
+  });
+
+  test('null resident_percent is unknown, not fully resident', () => {
+    const r = computeNodeMemoryResidency([
+      { nodeName: 'n1', flat: [idx(null), idx(100)] }
+    ]);
+    expect(r.perNode[0].knownCount).toBe(1);
+    expect(r.perNode[0].fullyResidentCount).toBe(1);
+    expect(r.perNode[0].fullyResidentPct).toBe(100);
+  });
+
+  test('resident_percent 0 is known and not fully resident', () => {
+    const r = computeNodeMemoryResidency([
+      { nodeName: 'n1', flat: [idx(0)] }
+    ]);
+    expect(hasResidentMetric(r.perNode[0] && { resident_percent: 0 })).toBe(true);
+    expect(isFullyResident({ resident_percent: 0 })).toBe(false);
+    expect(r.perNode[0].fullyResidentCount).toBe(0);
+    expect(r.perNode[0].knownCount).toBe(1);
+  });
+
+  test('empty nodes', () => {
+    const r = computeNodeMemoryResidency([]);
+    expect(r.avgFullyResidentIndexesPerNode).toBe(0);
+    expect(r.clusterFullyResidentPct).toBeNull();
   });
 });
 
