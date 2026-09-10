@@ -11,10 +11,12 @@ npm test
 
 ```
 tests/
-├── pure.test.js        # 97 tests — pure/logic functions (no DOM or browser needed)
-├── rebalance.test.js   # 53 tests — rebalance/placement optimizer strategies & constraints
-├── estimator.test.js   # 88 tests — New Index Estimator (CollatJSON encoding, parsing, sizing)
-└── server.test.js      # 12 tests — HTTP server API & static file serving
+├── pure.test.js        # pure/logic functions (no DOM or browser needed)
+├── rebalance.test.js   # rebalance/placement optimizer strategies & constraints
+├── estimator.test.js   # New Index Estimator (CollatJSON encoding, parsing, sizing)
+├── server.test.js      # HTTP server API & static file serving
+└── version.test.js     # package.json / HTML / README / release_notes version stay in sync
+```
 
 lib/
 └── pure.js             # Extracted pure functions from index.html & server.js (shared by tests)

@@ -33,7 +33,10 @@
   <div class="flex-1 gap-3">
     <span class="text-xl font-bold text-error">CB Index Analyzer</span>
     <span class="text-xs text-base-content/50 hidden sm:inline">Visualize & analyze GSI index sizes, performance & capacity</span>
-    <span class="badge badge-ghost badge-sm text-[10px]">v2.6.2</span>
+    <details class="dropdown">
+      <summary id="app-version-badge" class="badge badge-ghost badge-sm text-[10px] cursor-pointer list-none" title="What's new in this release">v2.7.0</summary>
+      <div id="app-version-panel" class="dropdown-content z-[60] mt-2 w-80 rounded-box border border-base-300 bg-base-100 p-3 shadow-lg text-left text-xs"></div>
+    </details>
   </div>
   <div class="flex-none">
     <button class="btn btn-ghost btn-sm gap-1" onclick="openFileManager()"><span id="saved-count" class="badge badge-sm badge-ghost">0</span></button>
@@ -500,6 +503,23 @@
 </dialog>
 
 <script>
+// ===== VERSION (keep in sync with package.json — see guides/RELEASE.md) =====
+const APP_VERSION='2.7.0';
+const APP_RELEASE_DATE='2026-09-10';
+const APP_RELEASE_HIGHLIGHTS=[
+  'Partitioned GSI indexes: Part badge, Unique Only keeps per-node slices, optimizer skips illegal ALTER INDEX moves.',
+  'Analysis: Memory Residency by Node — % of indexes 100% in RAM and avg fully-resident indexes per node.',
+];
+function renderVersionBadge(){
+  const badge=document.getElementById('app-version-badge');
+  const panel=document.getElementById('app-version-panel');
+  if(badge)badge.textContent='v'+APP_VERSION;
+  if(!panel)return;
+  panel.innerHTML='<div class="font-bold mb-1">v'+APP_VERSION+' <span class="text-base-content/50 font-normal">'+APP_RELEASE_DATE+'</span></div>'
+    +'<ul class="list-disc pl-4 space-y-1 mb-2">'+APP_RELEASE_HIGHLIGHTS.map(h=>'<li>'+h+'</li>').join('')+'</ul>'
+    +'<a class="link link-primary text-[10px]" href="release_notes.md" target="_blank" rel="noopener">Full release notes</a>';
+}
+
 // ===== GLOBAL STATE =====
 let globalSystemFlat=[],globalStatsFlat=[],globalReplicaMap={},globalNodeColors={},currentMetric='disk_size',activeCharts=[],chartIndexMaps=[],statsNodeCount=1,insightData={};
 let priorityIndexes=new Set(); // fullKeys of indexes the user wants more in-memory
@@ -538,7 +558,7 @@ function showInsightModal(key,limit){
   document.getElementById('insight-modal-desc').textContent=d.desc;
   const items=d.items.slice(0,max);
   let h=`<table class="table table-xs table-zebra w-full"><thead><tr class="bg-base-200"><th class="w-10">#</th><th>Index</th><th>Node</th><th>Bucket</th><th>Scope</th><th class="text-right">${d.colLabel}</th></tr></thead><tbody>`;
-  const hideReplica=document.getElementById('f-unique').checked;items.forEach((x,i)=>{h+=`<tr><td class="font-mono text-xs font-bold">${i+1}</td><td class="font-semibold">${x.name}${primaryBadge(x)}${!hideReplica&&x._replicaTotal>1?replicaBadge(x):''}</td><td class="text-xs">${nodeBadge(x._nodeName)}</td><td>${x.bucket}</td><td>${x.scope}</td><td class="font-mono text-xs text-right">${d.fmtVal(x)}</td></tr>`});
+  const hideReplica=document.getElementById('f-unique').checked;items.forEach((x,i)=>{h+=`<tr><td class="font-mono text-xs font-bold">${i+1}</td><td class="font-semibold">${x.name}${primaryBadge(x)}${partitionBadge(x)}${!hideReplica&&x._replicaTotal>1?replicaBadge(x):''}</td><td class="text-xs">${nodeBadge(x._nodeName)}</td><td>${x.bucket}</td><td>${x.scope}</td><td class="font-mono text-xs text-right">${d.fmtVal(x)}</td></tr>`});
   h+='</tbody></table>';
   if(d.items.length>max)h+=`<p class="text-xs text-base-content/40 mt-2 text-center">Showing top ${max} of ${d.items.length}</p>`;
   document.getElementById('insight-modal-body').innerHTML=h;
@@ -682,8 +702,16 @@ function onFieldsKeydown(e){
 }
 function updateACHighlight(rows){rows.forEach((r,i)=>{r.classList.toggle('bg-primary/20',i===fieldACIndex);if(i===fieldACIndex)r.scrollIntoView({block:'nearest'})})}
 
-function stripReplicaSuffix(name){return name.replace(/\s*\(replica\s*\d+\)$/i,'')}
-function dedup(arr){const seen=new Set();return arr.filter(x=>{const k=x.bucket+':'+x.scope+':'+x.collection+':'+stripReplicaSuffix(x.name);if(seen.has(k))return false;seen.add(k);return true})}
+function stripReplicaSuffix(name){return String(name||'').replace(/\s*\(replica\s*\d+\)$/i,'')}
+function replicaIdFromName(name){const m=String(name||'').match(/\(replica\s*(\d+)\)$/i);return m?Number(m[1]):0}
+function parsePartitionFromName(name){const s=String(name||'');let m=s.match(/^(.*)\s+#(\d+)$/);if(m)return{name:m[1],partitionId:Number(m[2])};m=s.match(/^(.*):(\d+)$/);if(m)return{name:m[1],partitionId:Number(m[2])};return{name:s,partitionId:null}}
+function parseStatsKey(key){const p=String(key).split(':');let bucket,scope,collection,name,partitionId=null;if(p.length===2){bucket=p[0];scope='_default';collection='_default';name=p[1]}else if(p.length===4){bucket=p[0];scope=p[1];collection=p[2];name=p[3]}else if(p.length===5&&/^\d+$/.test(p[4])){bucket=p[0];scope=p[1];collection=p[2];name=p[3];partitionId=Number(p[4])}else if(p.length===3&&/^\d+$/.test(p[2])){bucket=p[0];scope='_default';collection='_default';name=p[1];partitionId=Number(p[2])}else{bucket=p[0];scope=p.length>2?p[1]:'_default';collection=p.length>3?p[2]:'_default';name=p[p.length-1]}const parsed=parsePartitionFromName(name);return{bucket,scope,collection,name:parsed.name,partitionId:partitionId!=null?partitionId:parsed.partitionId}}
+function indexFamilyKey(idx){return idx.bucket+':'+idx.scope+':'+idx.collection+':'+stripReplicaSuffix(idx.name)}
+function markPartitionedIndexes(allIndexes){const masterNodes={};(allIndexes||[]).forEach(idx=>{if(replicaIdFromName(idx.name)>0)return;const k=indexFamilyKey(idx);if(!masterNodes[k])masterNodes[k]=new Set();masterNodes[k].add(idx.currentNode||idx._nodeName)});(allIndexes||[]).forEach(idx=>{if(idx.isPartitioned)return;const k=indexFamilyKey(idx);if((idx.partitionId!=null&&idx.partitionId>0)||(masterNodes[k]&&masterNodes[k].size>1))idx.isPartitioned=true});return allIndexes}
+function isFullyResident(idx){return idx!=null&&idx.resident_percent!=null&&Number(idx.resident_percent)>=100}
+function hasResidentMetric(idx){return idx!=null&&idx.resident_percent!=null}
+function computeNodeMemoryResidency(nodes){const perNode=(nodes||[]).map(n=>{const flat=n.flat||[];const known=flat.filter(hasResidentMetric);const fully=known.filter(isFullyResident);const avgResidentPct=known.length?known.reduce((s,x)=>s+Number(x.resident_percent),0)/known.length:null;return{nodeName:n.nodeName,indexCount:flat.length,knownCount:known.length,fullyResidentCount:fully.length,fullyResidentPct:known.length?(100*fully.length)/known.length:null,avgResidentPct,memoryUsed:flat.reduce((s,x)=>s+(x.memory_used||0),0)}});const clusterKnownCount=perNode.reduce((s,r)=>s+r.knownCount,0);const clusterFullyResidentCount=perNode.reduce((s,r)=>s+r.fullyResidentCount,0);return{perNode,clusterFullyResidentCount,clusterKnownCount,clusterFullyResidentPct:clusterKnownCount?(100*clusterFullyResidentCount)/clusterKnownCount:null,avgFullyResidentIndexesPerNode:perNode.length?perNode.reduce((s,r)=>s+r.fullyResidentCount,0)/perNode.length:0}}
+function dedup(arr){const seen=new Set();return arr.filter(x=>{if(replicaIdFromName(x.name)>0)return false;const part=x.partitionId!=null?String(x.partitionId):'';const k=[x.bucket,x.scope,x.collection,stripReplicaSuffix(x.name),x._nodeName||'',part].join(':');if(seen.has(k))return false;seen.add(k);return true})}
 function matchNodeFilter(nodeName,f){return!f.nodes.length||f.nodes.includes(nodeName)}
 function getFilteredStats(){const f=getFilters();return globalStatsFlat.filter(n=>matchNodeFilter(n.nodeName,f)).map(n=>({...n,flat:n.flat.filter(x=>matchFilter(x,f))})).filter(n=>n.flat.length>0)}
 function populateFilters(){const all=[...globalSystemFlat,...globalStatsFlat.flatMap(n=>n.flat)];if(!all.length){document.getElementById('filter-bar').classList.add('hidden');return}document.getElementById('filter-bar').classList.remove('hidden');populateNodeFilter();cascadeFilters();rebuildFieldHaystack()}
@@ -756,9 +784,9 @@ function collapseAllNodes(){document.querySelectorAll('#stats-nodes .stats-node-
 function expandAllNodes(){document.querySelectorAll('#stats-nodes .stats-node-input').forEach(w=>{const ta=w.querySelector('.node-stats-json');const btn=w.querySelector('.node-toggle');if(ta.classList.contains('hidden')){ta.classList.remove('hidden');btn.textContent='▼'}})}
 
 // ===== PARSING =====
-function parseSystemJSON(js){let d;try{d=JSON.parse(js)}catch{try{d=JSON.parse('['+js+']')}catch{throw new Error('Invalid JSON')}}if(!Array.isArray(d)){if(d.results)d=d.results;else throw new Error('Expected array')}const flat=[];d.forEach(r=>{const idx=r.indexes||r;if(!idx.name)return;const isFTS=idx.using==='fts',bucket=idx.bucket_id||idx.keyspace_id||'unknown',scope=idx.scope_id||'_default',collection=idx.bucket_id?idx.keyspace_id:'_default',dn=isFTS?idx.name+' [FTS]':idx.name;flat.push({fullKey:`${bucket}:${scope}:${collection}:${dn}`,bucket,scope,collection,name:dn,value:1,type:idx.using||'gsi',state:idx.state||'unknown',replica:(idx.metadata&&idx.metadata.num_replica)||0,condition:idx.condition||'',keys:idx.index_key||[],keysStr:(idx.index_key||[]).join(', '),isPrimary:!!idx.is_primary,last_known_scan_time:(idx.metadata&&idx.metadata.stats&&idx.metadata.stats.last_known_scan_time)||0})});return flat}
+function parseSystemJSON(js){let d;try{d=JSON.parse(js)}catch{try{d=JSON.parse('['+js+']')}catch{throw new Error('Invalid JSON')}}if(!Array.isArray(d)){if(d.results)d=d.results;else throw new Error('Expected array')}const flat=[];d.forEach(r=>{const idx=r.indexes||r;if(!idx.name)return;const isFTS=idx.using==='fts',bucket=idx.bucket_id||idx.keyspace_id||'unknown',scope=idx.scope_id||'_default',collection=idx.bucket_id?idx.keyspace_id:'_default',dn=isFTS?idx.name+' [FTS]':idx.name;flat.push({fullKey:`${bucket}:${scope}:${collection}:${dn}`,bucket,scope,collection,name:dn,value:1,type:idx.using||'gsi',state:idx.state||'unknown',replica:(idx.metadata&&idx.metadata.num_replica)||0,condition:idx.condition||'',keys:idx.index_key||[],keysStr:(idx.index_key||[]).join(', '),isPrimary:!!idx.is_primary,partition:idx.partition||'',isPartitioned:!!(idx.partition&&String(idx.partition).trim()),numPartition:(idx.metadata&&(idx.metadata.num_partition||idx.metadata.numPartition))||null,last_known_scan_time:(idx.metadata&&idx.metadata.stats&&idx.metadata.stats.last_known_scan_time)||0})});return flat}
 
-function parseStatsNodeJSON(js,metric){let d;try{d=JSON.parse(js)}catch{throw new Error('Invalid JSON')}let indexer=null;const flat=[];for(const[key,s]of Object.entries(d)){if(key==='indexer'){indexer=s;continue}const p=key.split(':');let bucket,scope,collection,name;if(p.length===2){bucket=p[0];scope='_default';collection='_default';name=p[1]}else if(p.length===4){bucket=p[0];scope=p[1];collection=p[2];name=p[3]}else{bucket=p[0];scope=p.length>2?p[1]:'_default';collection=p.length>3?p[2]:'_default';name=p[p.length-1]}const ds=s.disk_size||0,da=s.data_size||0;flat.push({fullKey:key,bucket,scope,collection,name,value:s[metric]||ds||da||0,disk_size:ds,data_size:da,bloat_ratio:da>0?ds/da:0,items_count:s.items_count||0,frag_percent:s.frag_percent||0,resident_percent:s.resident_percent!=null?s.resident_percent:null,memory_used:s.memory_used||0,avg_item_size:s.avg_item_size||0,recs_in_mem:s.recs_in_mem||0,recs_on_disk:s.recs_on_disk||0,cache_hit_percent:s.cache_hit_percent||0,cache_hits:s.cache_hits||0,cache_misses:s.cache_misses||0,num_docs_pending:s.num_docs_pending||0,num_docs_queued:s.num_docs_queued||0,num_requests:s.num_requests||0,num_rows_returned:s.num_rows_returned||0,num_docs_indexed:s.num_docs_indexed||0,num_items_flushed:s.num_items_flushed||0,num_pending_requests:s.num_pending_requests||0,num_scan_errors:s.num_scan_errors||0,num_scan_timeouts:s.num_scan_timeouts||0,avg_scan_latency:s.avg_scan_latency||0,avg_drain_rate:s.avg_drain_rate||0,last_known_scan_time:s.last_known_scan_time||0,total_scan_duration:s.total_scan_duration||0,scan_bytes_read:s.scan_bytes_read||0,initial_build_progress:s.initial_build_progress!=null?s.initial_build_progress:100,avg_array_length:s.avg_array_length||0,docid_count:s.docid_count||0})}return{indexer,flat}}
+function parseStatsNodeJSON(js,metric){let d;try{d=JSON.parse(js)}catch{throw new Error('Invalid JSON')}let indexer=null;const flat=[];for(const[key,s]of Object.entries(d)){if(key==='indexer'){indexer=s;continue}const parsed=parseStatsKey(key);const bucket=parsed.bucket,scope=parsed.scope,collection=parsed.collection,name=parsed.name;const ds=s.disk_size||0,da=s.data_size||0;flat.push({fullKey:key,bucket,scope,collection,name,partitionId:parsed.partitionId,isPartitioned:parsed.partitionId!=null&&parsed.partitionId>0,value:s[metric]||ds||da||0,disk_size:ds,data_size:da,bloat_ratio:da>0?ds/da:0,items_count:s.items_count||0,frag_percent:s.frag_percent||0,resident_percent:s.resident_percent!=null?s.resident_percent:null,memory_used:s.memory_used||0,avg_item_size:s.avg_item_size||0,recs_in_mem:s.recs_in_mem||0,recs_on_disk:s.recs_on_disk||0,cache_hit_percent:s.cache_hit_percent||0,cache_hits:s.cache_hits||0,cache_misses:s.cache_misses||0,num_docs_pending:s.num_docs_pending||0,num_docs_queued:s.num_docs_queued||0,num_requests:s.num_requests||0,num_rows_returned:s.num_rows_returned||0,num_docs_indexed:s.num_docs_indexed||0,num_items_flushed:s.num_items_flushed||0,num_pending_requests:s.num_pending_requests||0,num_scan_errors:s.num_scan_errors||0,num_scan_timeouts:s.num_scan_timeouts||0,avg_scan_latency:s.avg_scan_latency||0,avg_drain_rate:s.avg_drain_rate||0,last_known_scan_time:s.last_known_scan_time||0,total_scan_duration:s.total_scan_duration||0,scan_bytes_read:s.scan_bytes_read||0,initial_build_progress:s.initial_build_progress!=null?s.initial_build_progress:100,avg_array_length:s.avg_array_length||0,docid_count:s.docid_count||0})}return{indexer,flat}}
 
 // ===== REPLICA MAP =====
 const REPLICA_COLORS=['#3b82f6','#22c55e','#f59e0b','#ef4444','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4','#84cc16'];
@@ -766,26 +794,47 @@ function replicaColor(i){return REPLICA_COLORS[(i-1)%REPLICA_COLORS.length]}
 function buildReplicaMap(){
   globalReplicaMap={};
   buildNodeColors();
+  const sysPart={};
+  (globalSystemFlat||[]).forEach(idx=>{
+    if(!idx.isPartitioned)return;
+    sysPart[indexFamilyKey(idx)]={partition:idx.partition,numPartition:idx.numPartition,isPartitioned:true};
+  });
+  const families={};
   globalStatsFlat.forEach(node=>{
     node.flat.forEach(idx=>{
-      const key=idx.bucket+':'+idx.scope+':'+idx.collection+':'+stripReplicaSuffix(idx.name);
-      if(!globalReplicaMap[key])globalReplicaMap[key]=[];
-      if(!globalReplicaMap[key].includes(node.nodeName))globalReplicaMap[key].push(node.nodeName);
+      const key=indexFamilyKey(idx);
+      if(!families[key])families[key]=[];
+      families[key].push({idx,nodeName:node.nodeName});
     });
   });
-  globalStatsFlat.forEach(node=>{
-    node.flat.forEach(idx=>{
-      const key=idx.bucket+':'+idx.scope+':'+idx.collection+':'+stripReplicaSuffix(idx.name);
-      const nodes=globalReplicaMap[key]||[];
-      idx._replicaTotal=nodes.length;
-      idx._replicaIndex=nodes.indexOf(node.nodeName)+1;
-      idx._replicaNodes=nodes;
-      idx._nodeName=node.nodeName;
+  Object.entries(families).forEach(([key,members])=>{
+    const replicaIds=new Set(members.map(m=>replicaIdFromName(m.idx.name)));
+    const nodesByReplica={};
+    members.forEach(m=>{
+      const rid=replicaIdFromName(m.idx.name);
+      if(!nodesByReplica[rid])nodesByReplica[rid]=new Set();
+      nodesByReplica[rid].add(m.nodeName);
+    });
+    const masterNodes=nodesByReplica[0]||new Set();
+    const fromSys=sysPart[key];
+    const isPartitioned=!!(fromSys||members.some(m=>m.idx.isPartitioned||(m.idx.partitionId!=null&&m.idx.partitionId>0))||masterNodes.size>1);
+    const replicaNodes=[...new Set(members.map(m=>m.nodeName))];
+    globalReplicaMap[key]=replicaNodes;
+    members.forEach(m=>{
+      m.idx.isPartitioned=isPartitioned||!!m.idx.isPartitioned;
+      if(fromSys){m.idx.partition=fromSys.partition;if(fromSys.numPartition)m.idx.numPartition=fromSys.numPartition}
+      m.idx._replicaId=replicaIdFromName(m.idx.name);
+      m.idx._replicaTotal=replicaIds.size;
+      m.idx._replicaIndex=m.idx._replicaId+1;
+      m.idx._replicaNodes=[...(nodesByReplica[m.idx._replicaId]||[])];
+      m.idx._partitionNodeCount=masterNodes.size;
+      m.idx._nodeName=m.nodeName;
     });
   });
 }
 function isPrimaryIndex(idx){return idx.isPrimary||/^#primary$/i.test(stripReplicaSuffix(idx.name))}
 function primaryBadge(idx){return isPrimaryIndex(idx)?' <span class="badge badge-outline badge-xs text-[9px] font-bold" style="color:#8b5cf6;border-color:#8b5cf6">P</span>':''}
+function partitionBadge(idx){if(!idx||(!idx.isPartitioned&&!(idx.partitionId!=null&&idx.partitionId>0)&&!idx.partition))return'';const part=idx.partitionId!=null&&idx.partitionId>0?' #'+idx.partitionId:'';const n=idx._partitionNodeCount;const tip='Hash-partitioned GSI'+part+(n?'. This row is the slice on this node; the index spans '+n+' nodes.':'')+(idx.partition?' PARTITION BY '+idx.partition:'');return' <span class="tooltip tooltip-bottom" data-tip="'+tip.replace(/"/g,'&quot;')+'"><span class="badge badge-outline badge-xs text-[9px] font-bold" style="color:#0d9488;border-color:#0d9488">Part</span></span>'}
 function replicaBadgeOne(ri,total,tipText){
   const bg=replicaColor(ri);
   return`<span class="tooltip tooltip-bottom" data-tip="${tipText}"><span class="badge badge-xs cursor-help text-white font-bold" style="background:${bg};border-color:${bg}">${ri}/${total}</span></span>`;
@@ -857,7 +906,7 @@ let h=`<div class="stats-table-wrap"><table class="table table-xs table-pin-rows
 </tr></thead><tbody>`;
 fl.forEach(f=>{const bw=Math.max(2,Math.round((f.disk_size||0)/mx*50));const fp=`${f.bucket}:${f.scope}:${f.collection}:${f.name}`;
 h+=`<tr data-key="${fp}" class="hover:bg-warning/10 cursor-pointer" onclick="onRowClick(this,'${nIdx}')">
-<td class="font-semibold max-w-[200px] truncate" title="${f.fullKey}" data-sort="${f.name}">${f.name}${primaryBadge(f)}</td>
+<td class="font-semibold max-w-[200px] truncate" title="${f.fullKey}" data-sort="${f.name}">${f.name}${primaryBadge(f)}${partitionBadge(f)}</td>
 <td class="text-center" data-sort="${f._replicaTotal||0}">${f._replicaTotal>1?replicaBadge(f):'<span class="badge badge-ghost badge-xs">—</span>'}</td>
 <td data-sort="${f.bucket}">${f.bucket}</td><td data-sort="${f.scope}">${f.scope}</td><td data-sort="${f.collection}">${f.collection}</td>
 <td class="font-mono text-xs text-right" data-sort="${f.disk_size||0}"><span class="inline-block h-2 rounded bg-info align-middle mr-1" style="width:${bw}px"></span>${fmt(f.disk_size)}</td>
@@ -904,7 +953,7 @@ function statsCopyAllTSV(btn){
 document.addEventListener('click',function(e){const th=e.target.closest('.stats-table th');if(!th)return;const col=th.dataset.col;if(!col)return;const table=th.closest('table'),tbody=table.querySelector('tbody'),rows=Array.from(tbody.querySelectorAll('tr:not(:last-child)')),isAsc=th.classList.contains('sa-asc');table.querySelectorAll('th').forEach(h=>{h.classList.remove('sa-asc','sa-desc');const a=h.querySelector('.sa');if(a){a.classList.remove('text-error');a.textContent='▼'}});const ci=Array.from(th.parentNode.children).indexOf(th);rows.sort((a,b)=>{const cA=a.children[ci],cB=b.children[ci],hA=cA.hasAttribute('data-sort'),hB=cB.hasAttribute('data-sort');let va=hA?cA.getAttribute('data-sort'):cA.textContent.trim(),vb=hB?cB.getAttribute('data-sort'):cB.textContent.trim();va=Number(va);vb=Number(vb);if(isNaN(va))va=cA.textContent.trim();if(isNaN(vb))vb=cB.textContent.trim();if(typeof va==='number'&&typeof vb==='number')return isAsc?vb-va:va-vb;return isAsc?String(vb).localeCompare(String(va)):String(va).localeCompare(String(vb))});th.classList.add(isAsc?'sa-desc':'sa-asc');const ar=th.querySelector('.sa');if(ar){ar.classList.add('text-error');ar.textContent=isAsc?'▼':'▲'}const total=tbody.querySelector('tr:last-child');rows.forEach(r=>tbody.appendChild(r));if(total)tbody.appendChild(total)});
 
 // ===== LOAD / RENDER =====
-function loadSystemData(){const js=document.getElementById('system-json').value.trim();if(!js){setStatus('system-status','Paste JSON','error');return}try{globalSystemFlat=parseSystemJSON(js);dupFinderDataVersion++;dupFinderCache={key:'',nodes:null,edges:null,prepared:null};populateFilters();renderTreemapView();const _unique=globalSystemFlat.length;const _total=globalSystemFlat.reduce((s,x)=>s+1+(x.replica||0),0);setStatus('system-status',`✓ ${_unique} indexes(unique) & ${_total} Total(includes replicas)`,'success');const tb=document.getElementById('system-json-toggle');if(tb)toggleSystemTextarea(tb);estUpdateCompareCount()}catch(e){setStatus('system-status',e.message,'error')}}
+function loadSystemData(){const js=document.getElementById('system-json').value.trim();if(!js){setStatus('system-status','Paste JSON','error');return}try{globalSystemFlat=parseSystemJSON(js);dupFinderDataVersion++;dupFinderCache={key:'',nodes:null,edges:null,prepared:null};if(globalStatsFlat.length)buildReplicaMap();populateFilters();renderTreemapView();const _unique=globalSystemFlat.length;const _total=globalSystemFlat.reduce((s,x)=>s+1+(x.replica||0),0);setStatus('system-status',`✓ ${_unique} indexes(unique) & ${_total} Total(includes replicas)`,'success');const tb=document.getElementById('system-json-toggle');if(tb)toggleSystemTextarea(tb);estUpdateCompareCount()}catch(e){setStatus('system-status',e.message,'error')}}
 function loadStatsData(){const nodes=document.querySelectorAll('#stats-nodes .stats-node-input'),nd=[];nodes.forEach(n=>{const name=n.querySelector('.node-name').value.trim()||'Node',json=n.querySelector('.node-stats-json').value.trim();if(json)nd.push({name,json})});if(!nd.length){setStatus('stats-status','Paste JSON','error');return}try{globalStatsFlat=nd.map(n=>{const r=parseStatsNodeJSON(n.json,currentMetric);return{nodeName:n.name,indexer:r.indexer,flat:r.flat}});buildReplicaMap();populateFilters();renderStatsView();setStatus('stats-status',`✓ ${globalStatsFlat.reduce((s,n)=>s+n.flat.length,0)} indexes, ${globalStatsFlat.length} node(s)`,'success');collapseAllNodes()}catch(e){setStatus('stats-status',e.message,'error')}}
 
 // ===== SYSTEM:INDEXES TABLE =====
@@ -913,15 +962,19 @@ function buildCreateIndex(idx){
   let ks;
   if(scope!=='_default'||collection!=='_default')ks=`\`${bucket}\`.\`${scope}\`.\`${collection}\``;
   else ks=`\`${bucket}\``;
+  let stmt;
   if(idx.isPrimary){
-    let stmt=`CREATE PRIMARY INDEX \`${idx.name}\` ON ${ks}`;
-    if(idx.replica>0)stmt+=` WITH {"num_replica":${idx.replica}}`;
-    return stmt;
+    stmt=`CREATE PRIMARY INDEX \`${idx.name}\` ON ${ks}`;
+  }else{
+    const keys=(idx.keys||[]).join(', ');
+    stmt=`CREATE INDEX \`${idx.name}\` ON ${ks}(${keys})`;
   }
-  const keys=(idx.keys||[]).join(', ');
-  let stmt=`CREATE INDEX \`${idx.name}\` ON ${ks}(${keys})`;
-  if(idx.condition)stmt+=` WHERE ${idx.condition}`;
-  if(idx.replica>0)stmt+=` WITH {"num_replica":${idx.replica}}`;
+  if(idx.partition)stmt+=` PARTITION BY ${idx.partition}`;
+  if(!idx.isPrimary&&idx.condition)stmt+=` WHERE ${idx.condition}`;
+  const withParts=[];
+  if(idx.replica>0)withParts.push(`"num_replica":${idx.replica}`);
+  if(idx.numPartition)withParts.push(`"num_partition":${idx.numPartition}`);
+  if(withParts.length)stmt+=` WITH {${withParts.join(', ')}}`;
   return stmt;
 }
 function copyCreateIndex(btn,text){navigator.clipboard.writeText(text).then(()=>{btn.textContent='copied';btn.classList.remove('btn-info');btn.classList.add('btn-success');setTimeout(()=>{btn.textContent='copy';btn.classList.remove('btn-success');btn.classList.add('btn-info')},2000)})}
@@ -958,7 +1011,7 @@ function makeSystemTable(filtered){
     const createStmt=buildCreateIndex(f);
     const escaped=createStmt.replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
     h+=`<tr class="hover:bg-warning/10">
-<td class="font-semibold max-w-[200px] truncate" title="${f.fullKey}" data-sort="${f.name}">${f.name}${primaryBadge(f)}</td>
+<td class="font-semibold max-w-[200px] truncate" title="${f.fullKey}" data-sort="${f.name}">${f.name}${primaryBadge(f)}${partitionBadge(f)}</td>
 <td data-sort="${f.bucket}">${f.bucket}</td>
 <td data-sort="${f.scope}">${f.scope}</td>
 <td data-sort="${f.collection}">${f.collection}</td>
@@ -1079,7 +1132,11 @@ function calcLumpinessScore(statsData){
   const idealDisk=totalDisk/nodeCount;
   const diskImbalance=idealDisk>0?diskPerNode.reduce((s,d)=>s+Math.abs(d-idealDisk),0)/(totalDisk):0;
   // 3. Replica spread: for indexes with replicas, are copies on different nodes?
-  const replicaKeys=Object.entries(globalReplicaMap).filter(([,nodes])=>nodes.length>1);
+  const replicaKeys=Object.entries(globalReplicaMap).filter(([key])=>{
+    let t=1;
+    for(const n of src){for(const idx of n.flat){if(indexFamilyKey(idx)===key){t=idx._replicaTotal||1;break}}}
+    return t>1;
+  });
   let replicaImbalance=0;
   if(replicaKeys.length){
     let colocated=0;
@@ -1182,6 +1239,12 @@ if(statsF.length){
 </div>
 ${(()=>{const lump=calcLumpinessScore(getFilteredStats());if(!lump)return'';const sc=lump.score;const color=sc>=90?'text-success':sc>=75?'text-info':sc>=60?'text-warning':'text-error';return`<div class="flex items-center gap-3 mt-3 pt-3 border-t border-base-200"><div class="tooltip tooltip-right" data-tip="Measures how unevenly (lumpy) your GSI indexes are distributed across index nodes. 100 = perfectly balanced. Uneven distribution can cause hot spots, uneven memory pressure, and inconsistent query latency. Weighted: 30% index count + 30% disk size + 20% memory + 20% replica spread."><div class="flex items-center gap-2 cursor-help"><span class="text-sm font-bold underline decoration-dotted">Lumpiness Score</span><span class="font-mono font-bold text-lg ${color}">${sc}</span><span class="badge badge-sm ${sc>=90?'badge-success':sc>=75?'badge-info':sc>=60?'badge-warning':'badge-error'}">${sc>=90?'Excellent':sc>=75?'Good':sc>=60?'Fair':sc>=40?'Poor':'Critical'}</span></div></div><div class="flex gap-2 text-[10px] text-base-content/50 ml-2"><div class="tooltip tooltip-bottom" data-tip="How evenly the number of indexes is distributed across nodes. 0% = perfectly even."><span class="cursor-help underline decoration-dotted">Count: ${lump.countImbalance}%</span></div><span>·</span><div class="tooltip tooltip-bottom" data-tip="How evenly total on-disk size is spread across nodes. 0% = perfectly even."><span class="cursor-help underline decoration-dotted">Disk: ${lump.diskImbalance}%</span></div><span>·</span><div class="tooltip tooltip-bottom" data-tip="How evenly RAM usage is spread across nodes. 0% = perfectly even."><span class="cursor-help underline decoration-dotted">Mem: ${lump.memImbalance}%</span></div><span>·</span><div class="tooltip tooltip-bottom" data-tip="Percentage of replicated indexes with copies on the same node instead of spread out. 0% = all replicas on separate nodes."><span class="cursor-help underline decoration-dotted">Replica: ${lump.replicaImbalance}%</span></div></div><span class="text-[10px] text-base-content/40 ml-auto">${lump.nodeNames.length} nodes</span></div>`})()}
 </div></div>`;
+
+  const res=computeNodeMemoryResidency(getFilteredStats());
+  const pct=v=>v==null?'—':v.toFixed(0)+'%';
+  const pctColor=v=>v==null?'':v>=80?'text-success':v>=50?'text-warning':'text-error';
+  const resRows=res.perNode.map(r=>`<tr class="text-xs"><td>${nodeBadge(r.nodeName)}</td><td class="font-mono text-right">${r.indexCount}</td><td class="font-mono text-right">${r.knownCount}</td><td class="font-mono text-right">${r.fullyResidentCount}</td><td class="font-mono text-right font-bold ${pctColor(r.fullyResidentPct)}">${pct(r.fullyResidentPct)}</td><td class="font-mono text-right">${pct(r.avgResidentPct)}</td><td class="font-mono text-right">${fmt(r.memoryUsed)}</td></tr>`).join('');
+  html+=`<div class="card bg-base-100 shadow-sm md:col-span-2"><div class="card-body p-3"><h3 class="font-bold text-sm mb-2">Memory Residency by Node</h3><p class="text-[10px] text-base-content/50 mb-2">Fully in RAM = resident_percent 100. Indexes with no Res% metric are excluded from the percentage. Unique Only is ignored here so each node's local copies are counted.</p><div class="stats stats-horizontal shadow-sm mb-3 w-full flex-wrap"><div class="stat py-2 px-3" title="Indexes with resident_percent = 100, across the filtered nodes"><div class="stat-title text-[10px]">Fully in RAM</div><div class="stat-value text-lg">${res.clusterFullyResidentCount} / ${res.clusterKnownCount}</div><div class="stat-desc text-[10px]">${pct(res.clusterFullyResidentPct)} of indexes with Res%</div></div><div class="stat py-2 px-3" title="Mean number of fully-resident indexes per index node"><div class="stat-title text-[10px]">Avg 100% in RAM / node</div><div class="stat-value text-lg">${res.avgFullyResidentIndexesPerNode.toFixed(1)}</div></div></div><table class="table table-xs w-full"><thead><tr class="bg-base-200/50"><th>Node</th><th class="text-right">Indexes</th><th class="text-right">With Res%</th><th class="text-right">100% RAM</th><th class="text-right">% 100% RAM</th><th class="text-right">Avg Res%</th><th class="text-right">Memory</th></tr></thead><tbody>${resRows}</tbody></table></div></div>`;
 }
 
 // Index Item Count Distribution (half width) + Performance Insights (half width)
@@ -1363,7 +1426,7 @@ if(statsF.length){
     storeMetricChartData(m.key,allSorted,m.label,m.fmt,x=>x[m.key]||0);
     html+=`<div class="card bg-base-100 shadow-sm"><div class="card-body p-3"><div class="flex items-center justify-between mb-2"><div class="flex items-center gap-2"><h3 class="font-bold text-sm">${m.label}</h3>${nodeCountBadges(sorted)}</div><div class="flex items-center gap-1"><div class="join"><button class="btn btn-xs join-item btn-active" id="mtbl-${m.key}-btn" onclick="switchMetricView('${m.key}','table')">Table</button><button class="btn btn-xs join-item" id="mbar-${m.key}-btn" onclick="switchMetricView('${m.key}','chart')">Bar</button></div><button class="btn btn-ghost btn-xs" onclick="expandMetricChart('${chartId}','${m.label}')" title="Expand chart">⛶</button></div></div>`;
     html+=`<div id="mtbl-wrap-${m.key}"><table class="table table-xs"><thead><tr class="bg-base-200"><th>#</th><th>Index</th><th>Node</th><th>Bucket</th><th class="text-right">${m.label.split(' ').slice(1).join(' ')}</th></tr></thead><tbody>`;
-    sorted.forEach((item,i)=>{html+=`<tr><td><span class="font-mono text-xs font-bold">${i+1}</span></td><td class="font-semibold">${item.name}${primaryBadge(item)}${!f.uniqueOnly&&item._replicaTotal>1?replicaBadge(item):''}</td><td class="text-xs">${nodeBadge(item._nodeName)}</td><td>${item.bucket}</td><td class="font-mono text-xs text-right">${m.fmt(item[m.key])}</td></tr>`});
+    sorted.forEach((item,i)=>{html+=`<tr><td><span class="font-mono text-xs font-bold">${i+1}</span></td><td class="font-semibold">${item.name}${primaryBadge(item)}${partitionBadge(item)}${!f.uniqueOnly&&item._replicaTotal>1?replicaBadge(item):''}</td><td class="text-xs">${nodeBadge(item._nodeName)}</td><td>${item.bucket}</td><td class="font-mono text-xs text-right">${m.fmt(item[m.key])}</td></tr>`});
     html+=`</tbody></table>`;
     if(allSorted.length>10)html+=`<div class="flex gap-2 justify-center mt-2"><button class="btn btn-ghost btn-xs text-[10px]" onclick="showInsightModal('${iKey}',25)">Show more (25) →</button><button class="btn btn-ghost btn-xs text-[10px]" onclick="showInsightModal('${iKey}',100)">Show more (100) →</button>${allSorted.length>100?`<button class="btn btn-ghost btn-xs text-[10px]" onclick="showInsightModal('${iKey}',${allSorted.length})">Show all (${allSorted.length}) →</button>`:''}</div>`;
     html+=`</div><div id="${chartId}" class="abox" style="display:none"></div>`;
@@ -1376,7 +1439,7 @@ if(statsF.length){
     never.sort((a,b)=>(b.disk_size||0)-(a.disk_size||0));
     storeMetricChartData('never_scanned',never,'Never Scanned Indexes (Disk Size)',fmt,x=>x.disk_size||0);
     html+=`<div class="card bg-base-100 shadow-sm"><div class="card-body p-3"><div class="flex items-center justify-between mb-2"><div class="flex items-center gap-2"><h3 class="font-bold text-sm">Never Scanned Indexes (${never.length})</h3>${nodeCountBadges(never)}</div><div class="flex items-center gap-1"><div class="join"><button class="btn btn-xs join-item btn-active" id="mtbl-never_scanned-btn" onclick="switchMetricView('never_scanned','table')">Table</button><button class="btn btn-xs join-item" id="mbar-never_scanned-btn" onclick="switchMetricView('never_scanned','chart')">Bar</button><button class="btn btn-xs join-item" id="mpie-never_scanned-btn" onclick="switchMetricView('never_scanned','pie')">Pie</button></div><button class="btn btn-ghost btn-xs" onclick="expandMetricChart('mchart-never_scanned','Never Scanned Indexes')" title="Expand chart">⛶</button></div></div><div id="mtbl-wrap-never_scanned"><p class="text-xs text-base-content/50 mb-2">These indexes consume disk but have never been queried. Consider dropping them.</p><div class="overflow-y-auto max-h-[400px]"><table class="table table-xs table-pin-rows"><thead><tr class="bg-base-200"><th>Index</th><th>Node</th><th>Bucket</th><th>Scope</th><th class="text-right">Disk</th></tr></thead><tbody>`;
-    never.forEach(x=>{html+=`<tr><td class="font-semibold">${x.name}${primaryBadge(x)}${!f.uniqueOnly&&x._replicaTotal>1?replicaBadge(x):''}</td><td class="text-xs">${nodeBadge(x._nodeName)}</td><td>${x.bucket}</td><td>${x.scope}</td><td class="font-mono text-xs text-right">${fmt(x.disk_size)}</td></tr>`});
+    never.forEach(x=>{html+=`<tr><td class="font-semibold">${x.name}${primaryBadge(x)}${partitionBadge(x)}${!f.uniqueOnly&&x._replicaTotal>1?replicaBadge(x):''}</td><td class="text-xs">${nodeBadge(x._nodeName)}</td><td>${x.bucket}</td><td>${x.scope}</td><td class="font-mono text-xs text-right">${fmt(x.disk_size)}</td></tr>`});
     html+=`</tbody></table></div></div><div id="mchart-never_scanned" class="abox" style="display:none"></div></div></div>`;
   }
 }
@@ -1671,7 +1734,7 @@ async function autoLoad(){
     });
   }
 }
-window.addEventListener('DOMContentLoaded',autoLoad);
+window.addEventListener('DOMContentLoaded',()=>{renderVersionBadge();autoLoad()});
 
 // ===== "MOVE IT, MOVE IT" TAB =====
 
@@ -1868,10 +1931,13 @@ function computeRebalancePlan(){
         num_requests:idx.num_requests||0,avg_scan_latency:idx.avg_scan_latency||0,
         num_rows_returned:idx.num_rows_returned||0,total_scan_duration:idx.total_scan_duration||0,
         currentNode:node.nodeName,
+        isPartitioned:!!idx.isPartitioned,partitionId:idx.partitionId!=null?idx.partitionId:null,
         _replicaNodes:idx._replicaNodes||[node.nodeName],_replicaTotal:idx._replicaTotal||1,_replicaIndex:idx._replicaIndex||1
       });
     });
   });
+
+  markPartitionedIndexes(allIndexes);
 
   // Group replicas: primary key is bucket:scope:collection:baseName (strip replica id)
   const replicaGroups={};
@@ -1965,6 +2031,12 @@ function computeRebalancePlan(){
       groupTotals[g].buckets[bk]=(groupTotals[g].buckets[bk]||0)+1;
     }
   }
+  function pinToCurrentNode(idx){
+    const nodeName=idx.currentNode;
+    assignment[nodeName].push({...idx,fromNode:idx.currentNode,toNode:idx.currentNode});
+    recordAssignment(nodeName,idx);
+  }
+  function groupIsPartitioned(replicas){return replicas.some(r=>r.isPartitioned)}
 
   // ── Strategy: Greedy (original, with performance sub-mode) ──
   function scoreGreedy(nodeName,idx,usedNodes){
@@ -2063,6 +2135,7 @@ function computeRebalancePlan(){
         return b[1].reduce((s,x)=>s+x.disk_size,0)-a[1].reduce((s,x)=>s+x.disk_size,0);
       });
       sorted.forEach(([,replicas])=>{
+        if(groupIsPartitioned(replicas)){replicas.forEach(pinToCurrentNode);return}
         const usedNodes=[];
         replicas.sort((a,b)=>a._replicaIndex-b._replicaIndex);
         replicas.forEach(idx=>{
@@ -2108,6 +2181,7 @@ function computeRebalancePlan(){
     });
 
     sortedGroups.forEach(([,replicas])=>{
+      if(groupIsPartitioned(replicas)){replicas.forEach(pinToCurrentNode);return}
       const usedNodes=[];
       replicas.sort((a,b)=>a._replicaIndex-b._replicaIndex);
       replicas.forEach(idx=>{
@@ -2281,6 +2355,11 @@ function renderMoveIt(){
 <a href="https://docs.couchbase.com/server/current/n1ql/n1ql-language-reference/alterindex.html" target="_blank" class="link link-primary">ALTER INDEX docs</a> and
 <a href="https://docs.couchbase.com/server/current/learn/clusters-and-availability/rebalance-and-index-service.html" target="_blank" class="link link-primary">Index Rebalance docs</a>.</div>
 </div>`;
+  const _partCount=(plan.assignment?Object.values(plan.assignment).flat():[]).filter(x=>x.isPartitioned).length;
+  const _partNames=new Set((plan.assignment?Object.values(plan.assignment).flat():[]).filter(x=>x.isPartitioned).map(x=>stripReplicaSuffix(x.name)));
+  if(_partNames.size){
+    html+=`<div class="alert alert-info shadow-sm mb-4 text-xs"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" class="stroke-current shrink-0 w-5 h-5"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg><div><b>${_partNames.size} partitioned index${_partNames.size!==1?'es':''}</b> (${_partCount} node slices) were left in place. <code>ALTER INDEX ... nodes</code> cannot change how many nodes a partitioned index occupies. Use cluster rebalance, or recreate the index with a new <code>nodes</code> / <code>num_partition</code> list.</div></div>`;
+  }
 
   // Strategy dropdown + help icon + minimize-moves
   const strategyLabels={greedy:'Greedy (Size + Count)',lpt:'Disk-Balanced (LPT)','inverse-freq':'Keyspace-Balanced (Inverse Freq)',stratified:'Stratified (Per-Collection)',importance:'Performance-Optimized (IPW)',reservoir:'Randomized (Reservoir)'};
@@ -3283,7 +3362,7 @@ function showIndexStats(fullKey,nIdx){
 
   const modal=document.getElementById('index-stats-modal');
   document.getElementById('index-stats-modal-title').textContent=idx.name;
-  document.getElementById('index-stats-modal-path').innerHTML=`<span class="badge badge-sm badge-ghost">${idx.bucket}</span> → <span class="badge badge-sm badge-ghost">${idx.scope}</span> → <span class="badge badge-sm badge-ghost">${idx.collection}</span> <span class="text-base-content/30 mx-1">|</span> Node: <span class="font-semibold">${nodeName}</span>${idx._replicaTotal>1?' <span class="badge badge-xs badge-info">Replica '+idx._replicaIndex+'/'+idx._replicaTotal+'</span>':''}`;
+  document.getElementById('index-stats-modal-path').innerHTML=`<span class="badge badge-sm badge-ghost">${idx.bucket}</span> → <span class="badge badge-sm badge-ghost">${idx.scope}</span> → <span class="badge badge-sm badge-ghost">${idx.collection}</span> <span class="text-base-content/30 mx-1">|</span> Node: <span class="font-semibold">${nodeName}</span>${partitionBadge(idx)}${idx._replicaTotal>1?' <span class="badge badge-xs badge-info">Replica '+idx._replicaIndex+'/'+idx._replicaTotal+'</span>':''}`;
 
   // Compute derived metrics
   const rowsPerReq=idx.num_requests>0?(idx.num_rows_returned/idx.num_requests):0;
@@ -3560,8 +3639,14 @@ function estParseIndex(sql){
   let keyExpressions=[];
   const onIdx=s.search(/ON\s+((?:`[^`]+`\.)*`[^`]+`|[^\s(]+)\s*\(/i);
   if(onIdx!==-1){const afterOn=s.substring(onIdx);const parenStart=afterOn.indexOf('(');if(parenStart!==-1){let depth=0,end=-1;for(let i=parenStart;i<afterOn.length;i++){if(afterOn[i]==='(')depth++;else if(afterOn[i]===')'){depth--;if(depth===0){end=i;break}}}if(end!==-1){const inner=afterOn.substring(parenStart+1,end).trim();let parts=[],d=0,cur='';for(let i=0;i<inner.length;i++){const c=inner[i];if(c==='(')d++;else if(c===')')d--;else if(c===','&&d===0){parts.push(cur.trim());cur='';continue}cur+=c}if(cur.trim())parts.push(cur.trim());keyExpressions=parts}}}
-  const whereMatch=s.match(/WHERE\s+(.+?)(\s+WITH\s+|\s+USING\s+|$)/i);
+  const whereMatch=s.match(/WHERE\s+(.+?)(\s+PARTITION\s+BY\s+|\s+WITH\s+|\s+USING\s+|$)/i);
   const whereClause=whereMatch?whereMatch[1].trim():null;
+  let partitionBy='';
+  const partIdx=s.search(/\bPARTITION\s+BY\s+/i);
+  if(partIdx!==-1){const rest=s.substring(partIdx).replace(/^\s*PARTITION\s+BY\s+/i,'');if(/^HASH\s*\(/i.test(rest)){const start=rest.indexOf('(');let depth=0,end=-1;for(let i=start;i<rest.length;i++){if(rest[i]==='(')depth++;else if(rest[i]===')'){depth--;if(depth===0){end=i;break}}}if(end>=0)partitionBy=rest.substring(0,end+1).trim()}}
+  let numPartition=null;
+  const withMatchEst=s.match(/\bWITH\s+(\{.*\})\s*;?\s*$/i);
+  if(withMatchEst){try{const w=JSON.parse(withMatchEst[1]);if(w.num_partition!=null)numPartition=Number(w.num_partition)}catch(e){}}
   function splitTopLevel(s){const parts=[];let d=0,cur='';for(let i=0;i<s.length;i++){if(s[i]==='(')d++;else if(s[i]===')')d--;else if(s[i]===','&&d===0){parts.push(cur.trim());cur='';continue}cur+=s[i]}if(cur.trim())parts.push(cur.trim());return parts}
   const resolvedFields=keyExpressions.map(expr=>{
     const metaMatch=expr.match(/^meta\s*\(\s*\)\s*\.\s*(\w+)$/i);
@@ -3572,7 +3657,7 @@ function estParseIndex(sql){
     if(simpleArrMatch)return{expr,field:simpleArrMatch[2].trim(),isArray:true,isMeta:false,arrayMode:simpleArrMatch[1].toUpperCase(),arrayVar:null,arraySubExprs:null};
     return{expr,field:expr.trim(),isArray:false,isMeta:false};
   });
-  return{indexName,keyspace,bucket,scope,collection,keyExpressions,resolvedFields,whereClause};
+  return{indexName,keyspace,bucket,scope,collection,keyExpressions,resolvedFields,whereClause,partitionBy,numPartition};
 }
 
 function estCalculate(){

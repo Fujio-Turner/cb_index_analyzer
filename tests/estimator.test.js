@@ -172,6 +172,13 @@ describe('estParseIndex', () => {
     expect(r.whereClause).toBe("type = 'a'");
   });
 
+  test('partitioned index PARTITION BY HASH(META().id)', () => {
+    const r = estParseIndex('CREATE INDEX idx_p ON `travel-sample`.`inventory`.`airline`(country) PARTITION BY HASH(META().id) WITH {"num_partition":8}');
+    expect(r.partitionBy).toBe('HASH(META().id)');
+    expect(r.numPartition).toBe(8);
+    expect(r.keyExpressions).toEqual(['country']);
+  });
+
   test('DISTINCT array index', () => {
     const r = estParseIndex('CREATE INDEX idx_arr ON `bucket`(DISTINCT tags)');
     expect(r.resolvedFields).toHaveLength(1);

@@ -21,6 +21,8 @@ function makeIndex(name, bucket, scope, collection, diskSize, opts = {}) {
     _replicaNodes: opts._replicaNodes || ['node1'],
     _replicaTotal: opts._replicaTotal || 1,
     _replicaIndex: opts._replicaIndex || 1,
+    isPartitioned: !!opts.isPartitioned,
+    partitionId: opts.partitionId != null ? opts.partitionId : null,
   };
 }
 
@@ -518,6 +520,42 @@ describe('computeRebalancePlan', () => {
         const memWithoutPrio = planNoPrio.nodeTotals[noPrioNode].mem;
         expect(memWithPrio).toBeLessThanOrEqual(memWithoutPrio);
       });
+    });
+  });
+
+  describe('Partitioned indexes stay in place (#69)', () => {
+    test('same name on multiple nodes is not moved', () => {
+      const filtered = makeCluster([
+        { name: 'node1', indexes: [
+          makeIndex('idx_p', 'b', 's', 'c', 50000),
+          makeIndex('idx_normal', 'b', 's', 'c', 1000),
+        ]},
+        { name: 'node2', indexes: [
+          makeIndex('idx_p', 'b', 's', 'c', 40000),
+        ]},
+        { name: 'node3', indexes: [
+          makeIndex('idx_other', 'b', 's', 'c', 2000),
+        ]},
+      ]);
+      const plan = runPlan(filtered, { rebalanceStrategy: 'greedy' });
+      expect(plan).not.toBeNull();
+      const partMoves = plan.moves.filter(m => m.name === 'idx_p');
+      expect(partMoves).toHaveLength(0);
+      const alterMentionsP = plan.alterStmts.some(s => s.includes('idx_p'));
+      expect(alterMentionsP).toBe(false);
+    });
+
+    test('explicit isPartitioned flag is respected even on a single node', () => {
+      const filtered = makeCluster([
+        { name: 'node1', indexes: [
+          makeIndex('idx_p', 'b', 's', 'c', 80000, { isPartitioned: true }),
+        ]},
+        { name: 'node2', indexes: [
+          makeIndex('idx_small', 'b', 's', 'c', 1000),
+        ]},
+      ]);
+      const plan = runPlan(filtered, { rebalanceStrategy: 'lpt' });
+      expect(plan.moves.filter(m => m.name === 'idx_p')).toHaveLength(0);
     });
   });
 });

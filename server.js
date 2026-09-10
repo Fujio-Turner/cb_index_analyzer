@@ -4,10 +4,13 @@ const path = require('path');
 
 const PORT = 3000;
 const DATA_DIR = path.join(__dirname, 'data');
+const APP_VERSION = (() => {
+  try { return require('./package.json').version; } catch { return ''; }
+})();
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.ico': 'image/x-icon' };
+const MIME = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json', '.png': 'image/png', '.ico': 'image/x-icon', '.md': 'text/markdown; charset=utf-8' };
 
 function sendJSON(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -99,5 +102,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🔍  CB Index Analyzer running at http://localhost:${PORT}`);
+  console.log(`🔍  CB Index Analyzer v${APP_VERSION} running at http://localhost:${PORT}`);
 });

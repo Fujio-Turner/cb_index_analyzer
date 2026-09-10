@@ -63,6 +63,7 @@ Both plans show you a **before → after Lumpiness Score comparison**, a detaile
 
 ### 🔍 Analysis Tab
 - **Summary dashboard** — total disk, data, memory, avg fragmentation, avg resident %, never-scanned count
+- **Memory Residency by Node** — per-machine % of indexes fully in RAM (`resident_percent = 100`) and average fully-resident index count per node
 - **📦 Index Item Count Distribution** — bar or pie chart showing how indexes are spread across percentile buckets by item count
 - **Pie / Bar charts** — disk and memory usage broken down by bucket, with toggle to switch between pie and stacked bar (by scope) views
 - **Top 10 / Bottom 10 leaderboards** — largest disk, highest fragmentation, lowest cache hit, highest bloat, most requests, and more
@@ -79,7 +80,7 @@ Both plans show you a **before → after Lumpiness Score comparison**, a detaile
 ![Duplicate Index Finder Screenshot 2](img/dup_finder_2.png)
 
 ### 💃 Index Placement Optimizer Tab *(Beta)*
-- **Plan A: Built-in Rebalance** — Greedy algorithm computes an optimized placement and generates `ALTER INDEX` statements
+- **Plan A: Built-in Rebalance** — Greedy algorithm computes an optimized placement and generates `ALTER INDEX` statements. Hash-partitioned indexes are left in place (`ALTER INDEX ... nodes` cannot change their node count).
 - **Plan B: AI-Assisted Rebalance** — Export topology with obfuscated hashes + TOON token optimization, send to any AI, import the result back. The tool de-hashes, scores, and generates ALTER INDEX statements.
 - **🎯 Greedy / Performance Strategy Toggle** — Choose between **Greedy** (balance by size/count) and **Performance** (spread hot indexes across nodes using scan requests, latency, and throughput metrics). The selected strategy is embedded in AI exports so the AI follows the same optimization goal.
 - **⭐ Priority Indexes** — Mark specific indexes as "priority" so the optimizer places them on nodes with the least memory load, maximizing the chance they stay fully resident in RAM. Priority selections are included in both Plan A (built-in) and Plan B (AI) exports. The moves table shows "Priority — placed for best memory" reasoning for any prioritized index that was moved.
@@ -238,7 +239,7 @@ docker compose up --build    # rebuild after updating index.html
 
 ## 📦 Current Release
 
-**v2.6.2** — See [release notes](release_notes.md) for details.
+**v2.7.0** — See [release notes](release_notes.md) for details. How to cut a release: [guides/RELEASE.md](guides/RELEASE.md).
 
 ---
 
